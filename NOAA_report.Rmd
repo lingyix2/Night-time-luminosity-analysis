@@ -1,0 +1,491 @@
+---
+title: "NOAA_report"
+author: "Lingyi Xu"
+output: 
+  pdf_document:
+    keep_tex: yes
+    latex_engine: xelatex
+---
+
+```{r, include=FALSE}
+options(tinytex.verbose = TRUE)
+```
+
+# Overview
+What I've been doing is based on the datasets which are already filtered to exclude data impacted by stray light, lightning, lunar illumination, and cloud-cover. It's provided by NOAA(https://www.ngdc.noaa.gov/eog/viirs/).However, it's recorded every month and it has some missing values so it may not be as accurate as the daily data.
+
+Time: I chose 2014 and 2017 to do the analyze because the Ramadans in these two years are very close to the natural periods related to the motion of the Moon. 
+Places: Antalya,sanliurfa,Siirt to see the night-time radiance changes in those cities.  
+Besides, I also compared the NTL at July in those places from 2013-2017 to see is there is an important increase in 2014 because it's Ramadan.
+
+```{r,results='hide',echo=FALSE,message=FALSE,warning=FALSE}
+#prepare packages
+library(sp)
+library(raster)
+library(rgdal)
+library(tidyverse)
+library(ggmap)
+library(plotly)
+register_google(key = "AIzaSyCzqqsj3-c8ZNHiZ2HrZFL2O4YHBUd6QIM")
+```
+
+```{r,include=FALSE}
+#prepare for datasets
+imagery = "F:\\Lingyi\\imagery"
+tifs = list.files(imagery,pattern = "\\.tif")
+rast_201705 <- raster(paste(imagery,"/",tifs[1],sep=""))
+rast_201706 <- raster(paste(imagery,"/",tifs[3],sep=""))## Turkey 201706 Ramadan month
+rast_201707 <- raster(paste(imagery,"/",tifs[5],sep=""))
+```
+
+```{r,include=FALSE}
+imagery = "F:\\Lingyi\\imageryy"
+tifs_2014 = list.files(imagery,pattern = "\\.tif")
+rast_201405 <- raster(paste(imagery,"\\",tifs_2014[1],sep=""))
+rast_201407 <- raster(paste(imagery,"\\",tifs_2014[5],sep=""))## Turkey 201407 Ramadan month
+rast_201408 <- raster(paste(imagery,"\\",tifs_2014[7],sep=""))
+```
+
+```{r,include=FALSE}
+imagery = "F:\\Lingyi\\imagery_all7"
+tifs_7 = list.files(imagery,pattern = "\\.tif")
+rast_201207 <- raster(paste(imagery,"\\",tifs_7[1],sep=""))
+rast_201307 <- raster(paste(imagery,"\\",tifs_7[3],sep=""))
+rast_201407 <- raster(paste(imagery,"\\",tifs_7[5],sep=""))#Ramadan month
+rast_201507 <- raster(paste(imagery,"\\",tifs_7[7],sep=""))
+rast_201607 <- raster(paste(imagery,"\\",tifs_7[9],sep=""))
+rast_201707 <- raster(paste(imagery,"\\",tifs_7[11],sep="")) 
+rast_201807 <- raster(paste(imagery,"\\",tifs_7[13],sep=""))
+```
+
+
+
+# Data visulization
+
+The 28 large Turkey cities by population from west to east are mapped and colored in order to reveal the gradations in each local urban environment in the Ramadan of 2017. Within each city, the relative intensity of light is indicative of the differences in human activity: brighter yellow indicates relatively more population acitivity and darker blue indicates relatively less activity. Also, the development patterns are distinct in each city, contoured to the waterways and roadways.   
+As we can see in the map, central business districts such as Ankara are appear in brilliant yellow clusters.
+
+```{r,include=FALSE}
+##Draw down Turkey Shapefile
+shapefile_download <- function(url, name) 
+  {
+  temp = tempfile()
+  download.file(url, temp) ##download the URL taret to the temp file
+  unzip(temp,exdir=getwd()) ##unzip
+  return(readOGR(paste(name,".shp",sep=""),name))
+}
+
+turkeyshape <- shapefile_download(
+                 url = "https://stacks.stanford.edu/file/druid:dh690mv5439/data.zip",
+                 name = "TUR_adm1"
+                                 )
+```
+
+
+```{r,results='hide',echo=FALSE,message=FALSE,warning=FALSE}
+Turkey_metrocities <-c(
+  #west
+  "Eskisehir","Izmir","Manisa","Aydin","Denizli","Antalya","Balikesir",
+  "Mugla","Canakkale", 
+  
+  #middle
+  "Adana",
+  "Ankara","Samsun","Malatya","Kayseri","Kahramanmaras", "Gaziantep",
+  "Hatay",  "Mersin",
+  
+  #east
+  "Trabzon","Ordu","Ardahan","Igdir","Sirnak","Mardin","Erzurum","Konya",
+  "Diyarbakir", "Sanliurfa"
+)
+
+##Set graph layout
+par(mai=c(0,0,0,0),mfrow = c(7,4),bg='#001a4d', bty='n')
+
+##Loop through data
+coords <- data.frame() ##place holder
+
+for(i in 1:length(Turkey_metrocities)){
+  
+  ##Coords
+  temp_coord <- geocode(Turkey_metrocities[i], source = "google")
+  coords <- rbind(coords,temp_coord)
+  
+  range <- extent(temp_coord$lon - 1, temp_coord$lon + 1,
+                  temp_coord$lat - 0.25, temp_coord$lat + 0.25)
+  rc <- crop(rast_201706, range)    
+  
+  ##Rescale brackets
+  sampled <- as.vector(rc)
+  if (sum(sampled)==0){
+    next
+  }
+  clusters <- 15
+  clust <- kmeans(sampled,clusters)$cluster
+  brk <- sort(aggregate(sampled, list(clust), max)[,2])
+  
+  #Plots
+  plot(rc, breaks=brk, col=colorRampPalette(c("#001a4d","#0066FF", "yellow"))(clusters), 
+       legend=F,yaxt='n',xaxt='n',frame = F, asp=1.5)
+  text(temp_coord$lon ,temp_coord$lat + 0.15,
+       Turkey_metrocities[i], 
+       col="white", cex=1.25)
+}
+
+
+```
+
+# Radiance and population
+In direct comparison, total night-time radiance and population are positively correlated.
+```{r,include=FALSE}
+#prepare functions
+masq <- function(shp,rast,i){
+  
+  #Extract one polygon based on index value i
+  polygon <- shp[i,] #extract one polygon
+  extent <- extent(polygon) #extract the polygon extent
+  #geocode("new york")
+  
+  #Raster extract
+  outer <- crop(rast, extent) #extract raster by polygon extent
+  inner <- mask(outer,polygon) #keeps values from raster extract that are within polygon
+  
+  #Convert cropped raster into a vector
+  #Specify coordinates
+  coords <- expand.grid(seq(extent@xmin,extent@xmax,(extent@xmax-extent@xmin)/(ncol(inner)-1)),
+                        seq(extent@ymin,extent@ymax,(extent@ymax-extent@ymin)/(nrow(inner)-1)))
+  #Convert raster into vector
+  data <- as.vector(inner)
+  
+  #package data in neat dataframe
+  data <- cbind(coords, data) 
+  colnames(data)<-c("lon","lat","avg_rad") #note that 
+  data <- data[!is.na(data$avg_rad),] #keep non-NA values only
+  
+  return(data)
+}
+
+```
+```{r,results='hide',echo=FALSE,message=FALSE,warning=FALSE}
+
+#population vs NTL
+Pops <- read.csv(file="F:/Lingyi/population.csv", header=TRUE)
+
+rads = data.frame()
+#msa_list <-c(32,41,56,14,26,11,15,59,4,67,55,48,42,34,
+#            37,58,75,63,12,38,71,57,31,54,27,68)
+msa_list <- c(1:81)
+for (i in msa_list){
+  #print(i)
+  shp_temp <- turkeyshape[turkeyshape@data$ID_1==i,]
+  loc = shp_temp@data$NAME_1
+  rad <- masq(shp_temp,rast_201706,1)$avg_rad
+  temp = data.frame(asciiname = loc, rad_sum = sum(rad))
+  rads <-rbind(rads,temp)
+}
+
+total <- merge(rads,Pops, by = "asciiname")
+colnames(total) <- c("asciiname" , "rad_sum"  ,  "population" ,"location" )
+
+library(plotly)
+plot_ly(total,x = ~log(rad_sum), y = ~log(population),
+        text = paste("City:", total$asciiname),
+        mode = "markers",
+        color = total$rad_sum, colors="Spectral")  %>% 
+  layout(title="Total Nighttime radiance vs. Population", showlegend = F)
+```
+
+
+
+
+# Muslim places of worship
+As we can see in the plot, the Muslim places of worships gather in Istanbul, Ankara, Antalya, Sanliurfa,Kayseri, Ordu and etc.
+Therefore, I chose cities below to do the analysis:
+    * Antalya (big city with intensive Muslim places of worship)
+    * Sanliurfa(big city with intensive Muslim places of worship) 
+    * Siirt(big city with sparse Muslim places of worship)
+```{r,results='hide',echo=FALSE,message=FALSE,warning=FALSE}
+
+## A muslim place of worship
+## 3300 muslim/ 3301 muslim_sunni/ 3302 muslim_shia
+
+shape_direct <- function(url) 
+{
+  temp = tempfile()
+  download.file(url, temp) ##download the URL taret to the temp file
+  unzip(temp,exdir=getwd()) ##unzip that file
+}
+#shape_direct(url="http://download.geofabrik.de/europe/turkey-latest-free.shp.zip")
+
+data_pofw = readOGR("gis_osm_pofw_a_free_1.shp","gis_osm_pofw_a_free_1")
+df_muslim = data_pofw[data_pofw@data$code%/%100==33,]
+plot(df_muslim, col="red", border="black", lwd=3,
+     main="Muslim places of worship")
+```
+
+
+
+# Method
+Firstly, I used the turkey shapefile(from https://stacks.stanford.edu/file/druid:dh690mv5439/data.zip) to get the exact extent of a specific city and then get the subdataset. Then I divided the subdataset into approximate 300,000 pixels based on the size of the area. Each pixel corresponding to a number(radiance) and its longitude and latitude. At this point, I could plot an histogram to show the counts of each radiance interval and calculate the total night-time radiance.
+
+
+
+
+
+
+# 2017 data explore
+The 2017 Ramadan starts from May 27 and ends in June 24, So I used NTL datasets from May, June and July to see the difference of night-time radiance over these three months in three cities.
+
+## Antalya
+
+Antalya is the eighth-most populous city in Turkey and the capital of Antalya Province. Located on Anatolia's southwest coast bordered by the Taurus Mountains, Antalya is the largest Turkish city on the Mediterranean coast with over one million people in its metropolitan area.
+```{r,results='hide',echo=FALSE,message=FALSE,warning=FALSE}
+# MSA city with intensive places of worship:  Antalya
+  i=11
+  #print(i)
+  #Extract MSA i polygon
+  shp_temp <- turkeyshape[turkeyshape@data$ID_1==i,]
+  loc = shp_temp@data$NAME_1
+  #Extract the radiances, append to radiances placeholder
+  rad_5 <- masq(shp_temp,rast_201705,1)$avg_rad
+  rad_6 <- masq(shp_temp,rast_201706,1)$avg_rad
+  rad_7 <- masq(shp_temp,rast_201707,1)$avg_rad
+  temp_5 <-data.frame(loc = as.character(paste("Before(TNL ",round(sum(rad_5),0),")",sep="")), avg_rad = log(rad_5))
+  temp_6 <-data.frame(loc = as.character(paste("Ramadan(TNL = ",round(sum(rad_6),0),")",sep="")), avg_rad = log(rad_6)) 
+  temp_7 <-data.frame(loc = as.character(paste("After(TNL = ",round(sum(rad_7),0),")",sep="")), avg_rad = log(rad_7)) 
+  radiances <- rbind(temp_5,temp_6,temp_7)
+  
+#Use ggplot to create histograms by MSA group.
+  ggplot(radiances, aes(x=avg_rad)) +
+  geom_histogram(aes(col = loc,fill = loc),position="stack", alpha=0.4) +
+  facet_grid(. ~ loc)+
+  labs(title=loc, subtitle="From 2017 NOAA dataset", 
+       y="Counts", x="Radiance")
+
+```
+In the plot above, the TNL(total night-time lights) at Antalya was not increased at June as we imagine and the radiance distribution is the same as usual. 
+
+## Sanliurfa
+Sanliurfa is a city with a population of over 2 million residents in south-eastern Turkey, and the capital of Sanlıurfa Province. Danliurfa is a multiethnic city with a Turkish, Kurdish, Armenian and Arab population and is situated on a plain about eighty kilometres east of the Euphrates River.
+
+```{r,results='hide',echo=FALSE,message=FALSE,warning=FALSE}
+# MSA city with intensive places of worship:  sanliurfa
+i = 68
+#print(i)
+#Extract MSA i polygon
+shp_temp <- turkeyshape[turkeyshape@data$ID_1==i,]
+loc = shp_temp@data$NAME_1
+#Extract the radiances, append to radiances placeholder
+rad_5 <- masq(shp_temp,rast_201705,1)$avg_rad
+rad_6 <- masq(shp_temp,rast_201706,1)$avg_rad
+rad_7 <- masq(shp_temp,rast_201707,1)$avg_rad
+temp_5 <-data.frame(loc = as.character(paste("Before(TNL = ",round(sum(rad_5),0),")",sep="")), avg_rad = log(rad_5))
+temp_6 <-data.frame(loc = as.character(paste("Ramadan(TNL = ",round(sum(rad_6),0),")",sep="")), avg_rad = log(rad_6)) 
+temp_7 <-data.frame(loc = as.character(paste("After(TNL = ",round(sum(rad_7),0),")",sep="")), avg_rad = log(rad_7)) 
+radiances <- rbind(temp_5,temp_6,temp_7)
+
+#Use ggplot to create histograms by MSA group.
+ggplot(radiances, aes(x=avg_rad)) +
+  geom_histogram(aes(col = loc,fill = loc),position="stack", alpha=0.4) +
+  facet_grid(. ~ loc)+
+  labs(title=loc, subtitle="From 2017 NOAA dataset", 
+       y="Counts", x="Radiance")
+```
+The TNL at Sanliurfa increased a little at Ramadan and was more evenly distributed. 
+
+## Siirt
+Siirt is a city in southeastern Turkey and the seat of Siirt Province. The population of the city according to the 2009 census was 129,188. The majority of the city's population is Kurdish.
+```{r,results='hide',echo=FALSE,message=FALSE,warning=FALSE}
+# MSA city with less worship:  Siirt
+i=69
+#print(i)
+#Extract MSA i polygon
+shp_temp <- turkeyshape[turkeyshape@data$ID_1==i,]
+loc = shp_temp@data$NAME_1
+#Extract the radiances, append to radiances placeholder
+rad_5 <- masq(shp_temp,rast_201705,1)$avg_rad
+rad_6 <- masq(shp_temp,rast_201706,1)$avg_rad
+rad_7 <- masq(shp_temp,rast_201707,1)$avg_rad
+temp_5 <-data.frame(loc = as.character(paste("Before(TNL = ",round(sum(rad_5),0),")",sep="")), avg_rad = log(rad_5))
+temp_6 <-data.frame(loc = as.character(paste("Ramadan(TNL = ",round(sum(rad_6),0),")",sep="")), avg_rad = log(rad_6)) 
+temp_7 <-data.frame(loc = as.character(paste("After(TNL = ",round(sum(rad_7),0),")",sep="")), avg_rad = log(rad_7)) 
+radiances <- rbind(temp_5,temp_6,temp_7)
+
+#Use ggplot to create histograms by MSA group.
+ggplot(radiances, aes(x=avg_rad)) +
+  geom_histogram(aes(col = loc,fill = loc),position="stack", alpha=0.4) +
+  facet_grid(. ~ loc)+
+  labs(title=loc, subtitle="From 2017 NOAA dataset", 
+       y="Counts", x="Radiance")
+
+
+```
+The TNL at Sanliurfa was not increased as we imagine and in fact it was decreased a little bit.
+
+
+
+
+# 2014 data explore
+The 2014 Ramadan starts from June 28 and ends in July 27. So I was supposed to use NTL datasets from June, July and August. However, when I read in the June data, it turned out to be all zeros. Therefore, I use the May data instead which is two months before the Ramadan.
+
+##  Antalya
+```{r,results='hide',echo=FALSE,message=FALSE,warning=FALSE}
+i=11
+#print(i)
+#Extract MSA i polygon
+shp_temp <- turkeyshape[turkeyshape@data$ID_1==i,]
+loc = shp_temp@data$NAME_1
+#Extract the radiances, append to radiances placeholder
+rad_201405 <- masq(shp_temp,rast_201405,1)$avg_rad
+#rad_201406 <- masq(shp_temp,rast_201406,1)$avg_rad
+rad_201407 <- masq(shp_temp,rast_201407,1)$avg_rad
+rad_201408 <- masq(shp_temp,rast_201408,1)$avg_rad
+temp_201405 <-data.frame(loc = as.character(paste("Before(TNL = ",round(sum(rad_201405),0),")",sep="")), avg_rad = log(rad_201405))
+#temp_201406 <-data.frame(loc = as.character(paste("Before(TNL = ",round(sum(rad_201406),0),")",sep="")), avg_rad = log(rad_201406))
+temp_201407 <-data.frame(loc = as.character(paste("Ramadan(TNL = ",round(sum(rad_201407),0),")",sep="")), avg_rad = log(rad_201407)) 
+temp_201408 <-data.frame(loc = as.character(paste("After(TNL = ",round(sum(rad_201408),0),")",sep="")), avg_rad = log(rad_201408)) 
+radiances_2014 <- rbind(temp_201405,temp_201407,temp_201408)
+
+#Use ggplot to create histograms by MSA group.
+ggplot(radiances_2014, aes(x=avg_rad)) +
+  geom_histogram(aes(col = loc,fill = loc),position="stack", alpha=0.4) +
+  facet_grid(. ~ loc)+
+  labs(title=loc, subtitle="From 2014 NOAA dataset", 
+       y="Counts", x="Radiance")
+```
+In the plot above we can see an important increasing of TNL at Ramadan and the radiance distribution 
+
+
+## Sanliurfa
+```{r,results='hide',echo=FALSE,message=FALSE,warning=FALSE}
+i=68
+#Extract MSA i polygon
+shp_temp <- turkeyshape[turkeyshape@data$ID_1==i,]
+loc = shp_temp@data$NAME_1
+#Extract the radiances, append to radiances placeholder
+rad_201405 <- masq(shp_temp,rast_201405,1)$avg_rad
+rad_201407 <- masq(shp_temp,rast_201407,1)$avg_rad
+rad_201408 <- masq(shp_temp,rast_201408,1)$avg_rad
+temp_201405 <-data.frame(loc = as.character(paste("Before(TNL = ",round(sum(rad_201405),0),")",sep="")), avg_rad = log(rad_201405))
+temp_201407 <-data.frame(loc = as.character(paste("Ramadan(TNL = ",round(sum(rad_201407),0),")",sep="")), avg_rad = log(rad_201407)) 
+temp_201408 <-data.frame(loc = as.character(paste("After(TNL = ",round(sum(rad_201408),0),")",sep="")), avg_rad = log(rad_201408)) 
+radiances_2014 <- rbind(temp_201405,temp_201407,temp_201408)
+
+#Use ggplot to create histograms by MSA group.
+ggplot(radiances_2014, aes(x=avg_rad)) +
+  geom_histogram(aes(col = loc,fill = loc),position="stack", alpha=0.4) +
+  facet_grid(. ~ loc)+
+  labs(title=loc, subtitle="From 2014 NOAA dataset", 
+       y="Counts", x="Radiance")
+```
+
+## Siirt
+```{r,results='hide',echo=FALSE,message=FALSE,warning=FALSE}
+i=69
+#Extract MSA i polygon
+shp_temp <- turkeyshape[turkeyshape@data$ID_1==i,]
+loc = shp_temp@data$NAME_1
+#Extract the radiances, append to radiances placeholder
+rad_201405 <- masq(shp_temp,rast_201405,1)$avg_rad
+rad_201407 <- masq(shp_temp,rast_201407,1)$avg_rad
+rad_201408 <- masq(shp_temp,rast_201408,1)$avg_rad
+temp_201405 <-data.frame(loc = as.character(paste("Before(TNL = ",round(sum(rad_201405),0),")",sep="")), avg_rad = log(rad_201405))
+temp_201407 <-data.frame(loc = as.character(paste("Ramadan(TNL = ",round(sum(rad_201407),0),")",sep="")), avg_rad = log(rad_201407)) 
+temp_201408 <-data.frame(loc = as.character(paste("After(TNL = ",round(sum(rad_201408),0),")",sep="")), avg_rad = log(rad_201408)) 
+radiances_2014 <- rbind(temp_201405,temp_201407,temp_201408)
+
+#Use ggplot to create histograms by MSA group.
+ggplot(radiances_2014, aes(x=avg_rad)) +
+  geom_histogram(aes(col = loc,fill = loc),position="stack", alpha=0.4) +
+  facet_grid(. ~ loc)+
+  labs(title=loc, subtitle="From 2014 NOAA dataset", 
+       y="Counts", x="Radiance")
+```
+
+
+
+
+
+# all July
+```{r,results='hide',echo=FALSE,message=FALSE,warning=FALSE}
+
+
+# Antalya
+i=11
+#print(i)
+#Extract MSA i polygon
+shp_temp <- turkeyshape[turkeyshape@data$ID_1==i,]
+loc = shp_temp@data$NAME_1
+#Extract the radiances, append to radiances placeholder
+rad_201707 <- masq(shp_temp,rast_201707,1)$avg_rad
+rad_201607 <- masq(shp_temp,rast_201607,1)$avg_rad
+rad_201507 <- masq(shp_temp,rast_201507,1)$avg_rad
+rad_201407 <- masq(shp_temp,rast_201407,1)$avg_rad
+rad_201307 <- masq(shp_temp,rast_201307,1)$avg_rad
+temp_201707 <-data.frame(loc = as.character(paste("2017(TNL = ",round(sum(rad_201707),0),")",sep="")), avg_rad = log(rad_201707))
+temp_201607 <-data.frame(loc = as.character(paste("2016(TNL = ",round(sum(rad_201607),0),")",sep="")), avg_rad = log(rad_201607)) 
+temp_201507 <-data.frame(loc = as.character(paste("2015(TNL = ",round(sum(rad_201507),0),")",sep="")), avg_rad = log(rad_201507)) 
+temp_201407 <-data.frame(loc = as.character(paste("2014(TNL = ",round(sum(rad_201407),0),")",sep="")), avg_rad = log(rad_201407)) 
+temp_201307 <-data.frame(loc = as.character(paste("2013(TNL = ",round(sum(rad_201307),0),")",sep="")), avg_rad = log(rad_201307)) 
+radiances_7 <- rbind(temp_201707,temp_201607,temp_201507,temp_201407,temp_201307)
+
+#Use ggplot to create histograms by MSA group.
+ggplot(radiances_7, aes(x=avg_rad)) +
+  geom_histogram(aes(col = loc,fill = loc),position="stack", alpha=0.4) +
+  facet_grid(. ~ loc)+
+  labs(title="Antalya July", subtitle="From 2013-2017 NOAA dataset", 
+       y="Counts", x="Radiance")
+
+
+# sanliurfa
+i=68
+#print(i)
+#Extract MSA i polygon
+shp_temp <- turkeyshape[turkeyshape@data$ID_1==i,]
+loc = shp_temp@data$NAME_1
+#Extract the radiances, append to radiances placeholder
+rad_201707 <- masq(shp_temp,rast_201707,1)$avg_rad
+rad_201607 <- masq(shp_temp,rast_201607,1)$avg_rad
+rad_201507 <- masq(shp_temp,rast_201507,1)$avg_rad
+rad_201407 <- masq(shp_temp,rast_201407,1)$avg_rad
+rad_201307 <- masq(shp_temp,rast_201307,1)$avg_rad
+temp_201707 <-data.frame(loc = as.character(paste("2017(TNL = ",round(sum(rad_201707),0),")",sep="")), avg_rad = log(rad_201707))
+temp_201607 <-data.frame(loc = as.character(paste("2016(TNL = ",round(sum(rad_201607),0),")",sep="")), avg_rad = log(rad_201607)) 
+temp_201507 <-data.frame(loc = as.character(paste("2015(TNL = ",round(sum(rad_201507),0),")",sep="")), avg_rad = log(rad_201507)) 
+temp_201407 <-data.frame(loc = as.character(paste("2014(TNL = ",round(sum(rad_201407),0),")",sep="")), avg_rad = log(rad_201407)) 
+temp_201307 <-data.frame(loc = as.character(paste("2013(TNL = ",round(sum(rad_201307),0),")",sep="")), avg_rad = log(rad_201307)) 
+radiances_7 <- rbind(temp_201707,temp_201607,temp_201507,temp_201407,temp_201307)
+
+#Use ggplot to create histograms by MSA group.
+ggplot(radiances_7, aes(x=avg_rad)) +
+  geom_histogram(aes(col = loc,fill = loc),position="stack", alpha=0.4) +
+  facet_grid(. ~ loc)+
+  labs(title="Sanliurfa July", subtitle="From 2013-2017 NOAA dataset", 
+       y="Counts", x="Radiance")
+
+
+#Siirt
+i=69
+#print(i)
+#Extract MSA i polygon
+shp_temp <- turkeyshape[turkeyshape@data$ID_1==i,]
+loc = shp_temp@data$NAME_1
+#Extract the radiances, append to radiances placeholder
+rad_201707 <- masq(shp_temp,rast_201707,1)$avg_rad
+rad_201607 <- masq(shp_temp,rast_201607,1)$avg_rad
+rad_201507 <- masq(shp_temp,rast_201507,1)$avg_rad
+rad_201407 <- masq(shp_temp,rast_201407,1)$avg_rad
+rad_201307 <- masq(shp_temp,rast_201307,1)$avg_rad
+temp_201707 <-data.frame(loc = as.character(paste("2017(TNL = ",round(sum(rad_201707),0),")",sep="")), avg_rad = log(rad_201707))
+temp_201607 <-data.frame(loc = as.character(paste("2016(TNL = ",round(sum(rad_201607),0),")",sep="")), avg_rad = log(rad_201607)) 
+temp_201507 <-data.frame(loc = as.character(paste("2015(TNL = ",round(sum(rad_201507),0),")",sep="")), avg_rad = log(rad_201507)) 
+temp_201407 <-data.frame(loc = as.character(paste("2014(TNL = ",round(sum(rad_201407),0),")",sep="")), avg_rad = log(rad_201407)) 
+temp_201307 <-data.frame(loc = as.character(paste("2013(TNL = ",round(sum(rad_201307),0),")",sep="")), avg_rad = log(rad_201307)) 
+radiances_7 <- rbind(temp_201707,temp_201607,temp_201507,temp_201407,temp_201307)
+
+#Use ggplot to create histograms by MSA group.
+ggplot(radiances_7, aes(x=avg_rad)) +
+  geom_histogram(aes(col = loc,fill = loc),position="stack", alpha=0.4) +
+  facet_grid(. ~ loc)+
+  labs(title="Siirt July", subtitle="From 2013-2017 NOAA dataset", 
+       y="Counts", x="Radiance")
+```
